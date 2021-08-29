@@ -103,23 +103,14 @@ if ($browser.ShowDialog() -eq "OK") {
         $groupAddress = $sourceSheet.Cells($row, 1).Text
         $groupName = $sourceSheet.Cells($row, 2).Text
 
-        <#
-        for($col = 3; $col -le $dataRange.Columns.Count; $col ++){
-            
-            $groupMember = $sourceSheet.Cells($row, $col).Text
-            
-
-            if(![string]::IsNullOrWhitespace($groupMember)){
-
-                $groupMembers += $groupMember
-            }
-
-        }
-        #>
+        # Create new distribution group
+        
         try {
 
+            
+            New-DistributionGroup -Name $groupName -PrimarySMTPAddress $groupAddress -RequireSenderAuthenticationEnabled $false -MemberJoinRestriction "Closed" -MemberDepartRestriction "Closed" | Out-Null
+
             $numCreated += 1
-            New-DistributionGroup -Name $groupName -PrimarySMTPAddress $groupAddress -RequireSenderAuthenticationEnabled $false -MemberJoinRestriction "Closed" -MemberDepartRestriction "Closed"
                         
         }
         catch {
@@ -129,8 +120,11 @@ if ($browser.ShowDialog() -eq "OK") {
             throw
         }
 
-        try {
+      
+        # Hide group from address list 
 
+        try {
+            Write-Host "In the try"
             Set-DistributionGroup -Identity $groupAddress -HiddenFromAddressListsEnabled $true
 
         }
@@ -141,6 +135,31 @@ if ($browser.ShowDialog() -eq "OK") {
             $err[0]
         }
 
+
+        # Add members to group
+
+        for($col = 3; $col -le $dataRange.Columns.Count; $col ++){
+            
+            $groupMember = $sourceSheet.Cells($row, $col).Text
+            
+
+            # Make sure cell wasn't empty
+
+            if(![string]::IsNullOrWhitespace($groupMember)){
+
+                #$groupMembers += $groupMember
+
+                try {
+                    Add-DistributionGroupMember -Identity $groupAddress -Member $groupMember
+                }
+                catch [System.Management.Automation.RemoteException]{
+
+                    Write-Host "$member could not be added. Please confirm address." -ForegroundColor Red
+                    $err[0]
+                }
+            }
+
+        }
         
     } # Cloose outer for loop
 
