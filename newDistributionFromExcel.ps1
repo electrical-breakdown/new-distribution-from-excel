@@ -10,16 +10,14 @@
     Accepts an Excel file as an input.
 
     .OUTPUTS
-    Does not generate output.
+    Outputs an Excel file with a status update and details for each group.
 
 
 #>
 
 #-------------------------------------- Connect to Exchange Online --------------------------------------#
 
-
-try {      
-       
+try {             
 
     # Check to see if there is already an active Exchange Online session before connecting a new session
     
@@ -45,16 +43,13 @@ try {
             Install-Module ExchangeOnlineManagement -Scope CurrentUser -Confirm 
 
         }    
-
                         
         # Connect to Exchange if the module is installed and there are no active sessions
 
-        #Connect-ExchangeOnline -UserPrincipalName $env:username@electricalbreakdown.com -ShowBanner:$false 
-        Connect-ExchangeOnline -UserPrincipalName mike@electricalbreakdown.com -ShowBanner:$false 
-       
+        Connect-ExchangeOnline -UserPrincipalName $env:username@electricalbreakdown.com -ShowBanner:$false 
+        
+        Write-Verbose "Connected to Exhange Online." -Verbose
     }   
-     
-    
 } 
 
 # Halt script execution if the connection to Exchange fails
@@ -80,52 +75,95 @@ $browser.Filter = "Excel Files (*.xlsx; *xls) | *.xlsx; *xls"
 $browser.Title = "Please Select an Excel File"
 
 
-#---------------------------- Process sheet and create groups  ---------------------------------#
+#---------------------------------- Open workbook and define variables  --------------------------------------#
 
 # Make sure a file is selected 
 
 if ($browser.ShowDialog() -eq "OK") {
 
     $filePath = $browser.FileName 
+    $currentFolder = Split-Path $filePath
+    $currentFileName = (Split-Path $filePath -Leaf).Split('.') 
+    $exportFilePath = "$($currentFolder)\$($currentFileName[0])_processed.$($currentFileName[-1])"
+
+    Write-Verbose "Saving new copy of workbook and processing data..."  -Verbose
 
     $excelObject = New-Object -ComObject Excel.Application
     $workbook = $excelObject.Workbooks.Open($filePath)
+    $workbook.SaveAs($exportFilePath)
+
     $sourceSheet = $workbook.Worksheets.Item(1)
     $dataRange = $sourceSheet.UsedRange   
-       
+
+    # Find the last column in the used data range
+
+    $lastCol = $dataRange.SpecialCells(11).Column
+
+    # The column after the last column will be used for a status message
+
+    $statusCol = $lastCol + 1
+    $sourceSheet.Cells(1, $statusCol).Value2 = "Status"
+
+    # The column after the status colum will be for notes
+
+    $detailsCol = $lastCol + 2
+    $sourceSheet.Cells(1, $detailsCol).Value2 = "Details"
+    
+    # Define color codes to be used in the exported Excel file
+
+    $successBGColor = [System.Drawing.Color]::FromArgb(169, 208, 142)
+    $warningBGColor = [System.Drawing.Color]::FromArgb(255, 217, 102)
+    $dangerBGColor = [System.Drawing.Color]::FromArgb(255, 121, 121)
+
+    # Create empty arrays to hold various data
+
     $groupsCreated = @()
     $groupsNotCreated = @()
-    $usersNotAdded = @()
-    $summary = [ordered]@{}
+    $usersNotAdded = @()  
+    
+    #---------------------------------- Process sheet and create groups  --------------------------------------#
+
+    # Iterate through each row in the sheeet. Start at 2 because the first row contains column headers
 
     for($row = 2; $row -le $dataRange.Rows.Count; $row ++){
 
+        $issuesFound = @()
+
         $groupAddress = $sourceSheet.Cells($row, 1).Text
         $groupName = $sourceSheet.Cells($row, 2).Text
+        $groupOwner = $sourceSheet.Cells($row, 3).Text
+
+        $statusCell = $sourceSheet.Cells($row, $statusCol)
+        $detailsCell = $sourceSheet.Cells($row, $detailsCol)
 
         # Create new distribution group
         
         try {
 
             Write-Verbose "Creating group $($groupAddress)..." -Verbose
-            New-DistributionGroup -Name $groupName -PrimarySMTPAddress $groupAddress -RequireSenderAuthenticationEnabled $false -MemberJoinRestriction "Closed" -MemberDepartRestriction "Closed" | Out-Null
+            
+            New-DistributionGroup -Name $groupName `
+                -PrimarySMTPAddress $groupAddress `
+                -RequireSenderAuthenticationEnabled $false `
+                -MemberJoinRestriction "Closed" `
+                -MemberDepartRestriction "Closed" `
+                -ModeratedBy $groupOwner `
+                | Out-Null
+                
             $groupsCreated += $groupAddress            
-            $groupCreated = $true
-                        
+            $groupCreated = $true                        
         }
         catch {
             
-            $groupsNotCreated += $groupAddress
+            Write-Host "Couldn't create group $groupAddress" -ForegroundColor Red  
 
-            Write-Verbose "Couldn't create group $groupAddress" -Verbose
-            
-            $summary.Add($groupAddress, @($error[0].Exception.Message))
-            Write-Host $error[0].Exception.Message  -ForegroundColor Red
+            $groupsNotCreated += $groupAddress
+            $issuesFound += $error[0].Exception.Message                
             $groupCreated = $false
         }
-
         
         if($groupCreated -eq $true){
+            
             # Hide group from address list 
 
             try {
@@ -137,94 +175,103 @@ if ($browser.ShowDialog() -eq "OK") {
             catch {
 
                 Write-Host "Couldn't hide from address list" -ForegroundColor Red
-                $error[0]
+                $issuesFound += $error[0].Exception.Message
             }
 
 
-            # Add members to group
+            #---------------------------- Add members to groups  ----------------------------------#
 
-            for($col = 3; $col -le $dataRange.Columns.Count; $col ++){
+            for($col = 4; $col -le $dataRange.Columns.Count; $col ++){
                 
                 $groupMember = $sourceSheet.Cells($row, $col).Text
                 
                 # Make sure cell wasn't empty
+
                 if(![string]::IsNullOrWhitespace($groupMember)){
                                     
                     try {
 
                         Write-Verbose "Adding $($groupMember)..." -Verbose
-                        Add-DistributionGroupMember -Identity $groupAddress -Member $groupMember
-                        # Maybe add a check to make sure user has an Exchange license
+                        Add-DistributionGroupMember -Identity $groupAddress -Member $groupMember                        
                     }
                     catch {
                         
                         if(!($groupMember -in $usersNotAdded)){
 
-                            $usersNotAdded += $groupMember
+                            $usersNotAdded += $groupMember                            
 
                         }
                         
-                        # Check to see if the group is already in the hash table. If it is, append the new error to the existing value array
-
-                        if($summary.$groupAddress){
-
-                            $summary[$groupAddress] += $error[0].Exception.Message
-                            
-                        }
-
-                       
-
-                        # If the group isn't already in the hash table, just add it
-                        else {
-                            
-                            $summary.Add($groupAddress, @($error[0].Exception.Message))
-
-                        }
-                                        
-                        Write-Host $error[0].Exception.Message  -ForegroundColor Red
+                        # If there was an issue adding the member, write the error message to the note cell                       
+                        
+                        $issuesFound += $error[0].Exception.Message                          
+                        Write-Host "$groupMember could not be added."  -ForegroundColor Red
                     }               
 
                 }           
 
             } # Close inner for loop
 
-            # If we get to this point and the group address isn't in '$summary' yet, there were no errors and we can add a success message        
+            # If we get to this point and $issuesFound isn't empty, there were errors       
 
-            if(!($summary.$groupAddress)){
+            if($issuesFound){
 
-                $summary.Add($groupAddress, "Group created and all members added succesfully.")
+                $statusCell.Value2 = "Created, but with issues"
+                
+                foreach($issue in $issuesFound){
+
+                    $detailsCell.Value2 += $issue
+
+                }
+                
+                $detailsCell.EntireRow.Interior.Color = $warningBGColor     
+
+            }
+            
+            else {
+
+                $statusCell.Value2 = "Created successfully"
+                $detailsCell.Value2 = "Group was created and all members were added succesfully."
+                $statusCell.EntireRow.Interior.Color = $successBGColor  
+
             }
 
-          
-            Write-Host "`n-------------------------------------------------------------------`n"
-        
         } # Close if block
+
+
+        # If group was not created
+
+        else {
+
+            $statusCell.Value2 = "Not Created"            
+            $detailsCell.Value2 = $issuesFound        
+            $detailsCell.EntireRow.Interior.Color = $dangerBGColor 
+
+        }    
+
+        Write-Host "`n-------------------------------------------------------------------`n"       
 
     } # Cloose outer for loop
 
 
-    #---------------------------- Closed Excel file and output status messages  ---------------------------------#
+    #---------------------------- Close Excel file and output status messages  ---------------------------------#
+    
+    # Select the columns containing new data and resize them        
 
-    # Close workbook once all groups have been created
+    $sourceSheet.Cells(1, $statusCol).EntireColumn.AutoFit() | Out-Null
+    $sourceSheet.Cells(1, $detailsCol).EntireColumn.AutoFit() | Out-Null
 
+    # Save and close workbook once all groups have been created
+
+    $workbook.Save()  
     $workbook.Close()
     $excelObject.Quit()
     
-    Clear-Host
-
-    # Display the full summary 
-
-    Write-Host "Summary:`n"
-    
-    $summary.Keys | Select-Object @{l="Group"; e={$_}}, @{l="Status"; e={$summary.$_}} | Out-Host
-    
-    Write-Host "-------------------------------------------------------------------`n"
-
-    $summary.GetEnumerator() | Select-Object @{l="Group"; e={$_.Key}}, @{l="Status"; e={$_.Value}} | Export-CSV -Path "C:\Users\Administrator\Desktop\log.csv"
-
-
+    Clear-Host   
+   
     # Display the groups that were created successfuly 
-    
+
+    Write-Host "`n-------------------------------------------------------------------`n"
     Write-Host "`n$($groupsCreated.Count) groups were created succesfully:`n" -ForegroundColor Green
     $groupsCreated
     Write-Host "`n-------------------------------------------------------------------`n"
@@ -250,6 +297,9 @@ if ($browser.ShowDialog() -eq "OK") {
 
     }
     
+    Write-Host "Detailed results have been exported to: $exportFilePath"
+    Write-Host "`n-------------------------------------------------------------------`n"
+
 
 } #Close main if block
 
