@@ -46,7 +46,8 @@ try {
                         
         # Connect to Exchange if the module is installed and there are no active sessions
 
-        Connect-ExchangeOnline -UserPrincipalName $env:username@electricalbreakdown.com -ShowBanner:$false 
+        # Connect-ExchangeOnline -UserPrincipalName $env:username@electricalbreakdown.com -ShowBanner:$false 
+        Connect-ExchangeOnline -UserPrincipalName mike@electricalbreakdown.com -ShowBanner:$false 
         
         Write-Verbose "Connected to Exhange Online." -Verbose
     }   
@@ -68,12 +69,13 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
 
-$errorActionPreference = "Stop"
+#$errorActionPreference = "Stop"
 
 $browser = New-Object System.Windows.Forms.OpenFileDialog
 $browser.Filter = "Excel Files (*.xlsx; *xls) | *.xlsx; *xls"
 $browser.Title = "Please Select an Excel File"
 
+$errorActionPreference = "Stop"
 
 #---------------------------------- Open workbook and define variables  --------------------------------------#
 
@@ -127,7 +129,9 @@ if ($browser.ShowDialog() -eq "OK") {
 
     for($row = 2; $row -le $dataRange.Rows.Count; $row ++){
 
+        $error.Clear()
         $issuesFound = @()
+
 
         $groupAddress = $sourceSheet.Cells($row, 1).Text
         $groupName = $sourceSheet.Cells($row, 2).Text
@@ -136,11 +140,27 @@ if ($browser.ShowDialog() -eq "OK") {
         $statusCell = $sourceSheet.Cells($row, $statusCol)
         $detailsCell = $sourceSheet.Cells($row, $detailsCol)
 
+        $groupMembers = @()
+
+        # Loop through remaining columns and gather up all the group members
+        
+        for($col = 4; $col -le $dataRange.Columns.Count; $col ++){
+            
+            $memberCell = $sourceSheet.Cells($row, $col).Text
+
+            if(![string]::IsNullOrWhitespace($memberCell)){
+                $groupMembers += $memberCell
+            }
+        }   
+
+        
         # Create new distribution group
         
         try {
 
             Write-Verbose "Creating group $($groupAddress)..." -Verbose
+            Write-Host "Group members: $groupMembers"
+
             
             New-DistributionGroup -Name $groupName `
                 -PrimarySMTPAddress $groupAddress `
@@ -148,6 +168,7 @@ if ($browser.ShowDialog() -eq "OK") {
                 -MemberJoinRestriction "Closed" `
                 -MemberDepartRestriction "Closed" `
                 -ModeratedBy $groupOwner `
+                -Members $groupMembers `
                 | Out-Null
                 
             $groupsCreated += $groupAddress            
@@ -155,11 +176,19 @@ if ($browser.ShowDialog() -eq "OK") {
         }
         catch {
             
-            Write-Host "Couldn't create group $groupAddress" -ForegroundColor Red  
+            Write-Host "There was a problem creating group $groupAddress" -ForegroundColor Red  
 
             $groupsNotCreated += $groupAddress
-            $issuesFound += $error[0].Exception.Message                
+
+            foreach($err in $error){
+
+                $issuesFound += $err.Exception.Message
+                Write-Host "error message: $err.Exception.Message"
+            }
+                            
             $groupCreated = $false
+            Write-Host "issues found: $issuesFound" -ForegroundColor Yellow
+
         }
         
         if($groupCreated -eq $true){
@@ -180,37 +209,9 @@ if ($browser.ShowDialog() -eq "OK") {
 
 
             #---------------------------- Add members to groups  ----------------------------------#
-
-            for($col = 4; $col -le $dataRange.Columns.Count; $col ++){
-                
-                $groupMember = $sourceSheet.Cells($row, $col).Text
-                
-                # Make sure cell wasn't empty
-
-                if(![string]::IsNullOrWhitespace($groupMember)){
-                                    
-                    try {
-
-                        Write-Verbose "Adding $($groupMember)..." -Verbose
-                        Add-DistributionGroupMember -Identity $groupAddress -Member $groupMember                        
-                    }
-                    catch {
+                  
                         
-                        if(!($groupMember -in $usersNotAdded)){
-
-                            $usersNotAdded += $groupMember                            
-
-                        }
-                        
-                        # If there was an issue adding the member, write the error message to the note cell                       
-                        
-                        $issuesFound += $error[0].Exception.Message                          
-                        Write-Host "$groupMember could not be added."  -ForegroundColor Red
-                    }               
-
-                }           
-
-            } # Close inner for loop
+                       
 
             # If we get to this point and $issuesFound isn't empty, there were errors       
 
@@ -243,8 +244,11 @@ if ($browser.ShowDialog() -eq "OK") {
 
         else {
 
-            $statusCell.Value2 = "Not Created"            
-            $detailsCell.Value2 = $issuesFound        
+            $statusCell.Value2 = "Not Created"    
+            
+            foreach($issue in $issuesFound){
+                $detailsCell.Value2 += $issue
+            }
             $detailsCell.EntireRow.Interior.Color = $dangerBGColor 
 
         }    
