@@ -4,14 +4,14 @@
     Creates Exchange distribution groups from data in an Excel spreadsheet
 
     .DESCRIPTION
-    Reads in data from an Excel sheet and creates Exchange distribution groups using the data provided in the spreadsheet.
+    Reads in data from an Excel sheet and creates Exchange distribution groups using the data provided in the spreadsheet. 
+    If there are any issues creating a group, that group will not be created by the script and must be created manually.
 
     .INPUTS
     Accepts an Excel file as an input.
 
     .OUTPUTS
     Outputs an Excel file with a status update and details for each group.
-
 
 #>
 
@@ -69,13 +69,12 @@ Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
 
-#$errorActionPreference = "Stop"
+$errorActionPreference = "Stop"
 
 $browser = New-Object System.Windows.Forms.OpenFileDialog
 $browser.Filter = "Excel Files (*.xlsx; *xls) | *.xlsx; *xls"
 $browser.Title = "Please Select an Excel File"
 
-$errorActionPreference = "Stop"
 
 #---------------------------------- Open workbook and define variables  --------------------------------------#
 
@@ -120,8 +119,8 @@ if ($browser.ShowDialog() -eq "OK") {
     # Create empty arrays to hold various data
 
     $groupsCreated = @()
-    $groupsNotCreated = @()
-    $usersNotAdded = @()  
+    $groupsNotCreated = @()    
+    
     
     #---------------------------------- Process sheet and create groups  --------------------------------------#
 
@@ -130,7 +129,7 @@ if ($browser.ShowDialog() -eq "OK") {
     for($row = 2; $row -le $dataRange.Rows.Count; $row ++){
 
         $error.Clear()
-        $issuesFound = @()
+        $issuesFound = ""
 
 
         $groupAddress = $sourceSheet.Cells($row, 1).Text
@@ -146,21 +145,19 @@ if ($browser.ShowDialog() -eq "OK") {
         
         for($col = 4; $col -le $dataRange.Columns.Count; $col ++){
             
-            $memberCell = $sourceSheet.Cells($row, $col).Text
+            $member = $sourceSheet.Cells($row, $col).Text
 
-            if(![string]::IsNullOrWhitespace($memberCell)){
-                $groupMembers += $memberCell
+            if(![string]::IsNullOrWhitespace($member)){
+                $groupMembers += $member
             }
         }   
-
         
-        # Create new distribution group
+        
+        # Create new distribution group and add members
         
         try {
 
-            Write-Verbose "Creating group $($groupAddress)..." -Verbose
-            Write-Host "Group members: $groupMembers"
-
+            Write-Verbose "Creating group $($groupAddress)..." -Verbose            
             
             New-DistributionGroup -Name $groupName `
                 -PrimarySMTPAddress $groupAddress `
@@ -172,28 +169,24 @@ if ($browser.ShowDialog() -eq "OK") {
                 | Out-Null
                 
             $groupsCreated += $groupAddress            
-            $groupCreated = $true                        
+            $groupCreated = $true     
+            $statusCell.Value2 = "Created successfully"
+            $detailsCell.Value2 = "Group was created and all members were added succesfully."
+            $statusCell.EntireRow.Interior.Color = $successBGColor                     
         }
         catch {
             
-            Write-Host "There was a problem creating group $groupAddress" -ForegroundColor Red  
+            Write-Warning "There was a problem creating group $groupAddress" 
 
-            $groupsNotCreated += $groupAddress
-
-            foreach($err in $error){
-
-                $issuesFound += $err.Exception.Message
-                Write-Host "error message: $err.Exception.Message"
-            }
-                            
-            $groupCreated = $false
-            Write-Host "issues found: $issuesFound" -ForegroundColor Yellow
+            $groupsNotCreated += $groupAddress    
+            $issuesFound = $error[0].Exception.Message                         
+            $groupCreated = $false            
 
         }
         
-        if($groupCreated -eq $true){
+        if($groupCreated -eq $true){            
             
-            # Hide group from address list 
+            # Hide group from global address list 
 
             try {
                 
@@ -203,57 +196,30 @@ if ($browser.ShowDialog() -eq "OK") {
 
             catch {
 
-                Write-Host "Couldn't hide from address list" -ForegroundColor Red
-                $issuesFound += $error[0].Exception.Message
-            }
+                Write-Warning "Couldn't hide $groupAddress from address list" 
+                $issuesFound = $error[0].Exception.Message
 
-
-            #---------------------------- Add members to groups  ----------------------------------#
-                  
-                        
-                       
-
-            # If we get to this point and $issuesFound isn't empty, there were errors       
-
-            if($issuesFound){
-
-                $statusCell.Value2 = "Created, but with issues"
-                
-                foreach($issue in $issuesFound){
-
-                    $detailsCell.Value2 += $issue
-
-                }
-                
+                $statusCell.Value2 = "Created - With Issues"        
+                $detailsCell.Value2 = $issuesFound                                
                 $detailsCell.EntireRow.Interior.Color = $warningBGColor     
-
-            }
+            }      
             
-            else {
-
-                $statusCell.Value2 = "Created successfully"
-                $detailsCell.Value2 = "Group was created and all members were added succesfully."
-                $statusCell.EntireRow.Interior.Color = $successBGColor  
-
-            }
-
+            
         } # Close if block
 
-
-        # If group was not created
+        # If group was not created...
 
         else {
 
-            $statusCell.Value2 = "Not Created"    
-            
-            foreach($issue in $issuesFound){
-                $detailsCell.Value2 += $issue
-            }
+            $statusCell.Value2 = "Not Created"               
+           
+            $detailsCell.Value2 += $issuesFound
             $detailsCell.EntireRow.Interior.Color = $dangerBGColor 
 
-        }    
+        }                   
 
-        Write-Host "`n-------------------------------------------------------------------`n"       
+        Write-Host "`n-------------------------------------------------------------------`n"   
+
 
     } # Cloose outer for loop
 
@@ -285,23 +251,14 @@ if ($browser.ShowDialog() -eq "OK") {
 
     if($groupsNotCreated){
 
-        Write-Host "$($groupsNotCreated.Count) groups could not be created:`n" -ForegroundColor Red
+        Write-Host "$($groupsNotCreated.Count) groups could not be created. Please review and create manually:`n" -ForegroundColor Red
         $groupsNotCreated
         Write-Host "`n-------------------------------------------------------------------`n"
 
     }
        
-    # Display a message if some users couldn't be added
-
-    if($usersNotAdded){
-
-        Write-Host "$($usersNotAdded.Count) users could not be added:`n" -ForegroundColor Red
-        $usersNotAdded
-        Write-Host "`n-------------------------------------------------------------------`n"
-
-    }
     
-    Write-Host "Detailed results have been exported to: $exportFilePath"
+    Write-Host "Detailed results have been exported to: $exportFilePath" -ForegroundColor Yellow
     Write-Host "`n-------------------------------------------------------------------`n"
 
 
